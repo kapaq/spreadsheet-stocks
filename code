@@ -1,0 +1,199 @@
+function processLatestTrade() {
+  var sheet = SpreadsheetApp.getActiveSpreadsheet();
+  var trades = sheet.getSheetByName("Trades");
+  var stocks = sheet.getSheetByName("Stocks");
+  var balances = sheet.getSheetByName("PlayerBalances");
+  var stockData = sheet.getSheetByName("StockData");
+
+  var lastRow = trades.getLastRow();
+  if (lastRow < 2) return;
+
+  var tradeData = trades.getRange(lastRow, 1, 1, trades.getLastColumn()).getValues()[0];
+  var player = tradeData[0];
+  var action = tradeData[1];
+  var company = tradeData[2];
+  var shares = tradeData[3];
+
+  var stockRow = findStockRow(stocks, company);
+  var balanceRow = findPlayerRow(balances, player);
+  
+  if (stockRow === -1 || balanceRow === -1) return;
+
+  var currentPrice = parseFloat(String(stocks.getRange(stockRow, 2).getValue()).replace(/[$,]/g, ''));
+  var previousPrice = currentPrice; 
+  var totalPriceChange = shares * currentPrice;
+
+  logStockData(stockData, company, previousPrice, currentPrice);
+
+  if (action === "Buy") {
+    var currentBalance = balances.getRange(balanceRow, 2).getValue();
+    if (currentBalance >= totalPriceChange) {
+      balances.getRange(balanceRow, 2).setValue(currentBalance - totalPriceChange);
+      currentPrice += (shares * 0.1);
+      stocks.getRange(stockRow, 2).setValue(currentPrice);
+      updatePlayerShares(balances, balanceRow, company, shares);
+    } else {
+      Logger.log(player + " does not have enough balance to buy " + shares + " shares.");
+    }
+  } else if (action === "Sell") {
+    var currentShares = getPlayerShares(balances, balanceRow, company);
+    if (currentShares >= shares) {
+      currentPrice -= (shares * 0.1);
+      stocks.getRange(stockRow, 2).setValue(currentPrice);
+      updatePlayerShares(balances, balanceRow, company, -shares);
+      balances.getRange(balanceRow, 2).setValue(currentBalance + totalPriceChange);
+    } else {
+      Logger.log(player + " does not have enough shares to sell " + shares + " shares.");
+    }
+  }
+
+  updateStockPriceColor(stocks, stockRow, previousPrice, currentPrice);
+  updatePercentChange(stocks, stockRow, previousPrice, currentPrice);
+  sendStockUpdateToDiscord(stocks, stockRow);
+}
+
+function updatePercentChange(stocks, stockRow, previousPrice, currentPrice) {
+  var percentChange = ((currentPrice - previousPrice) / previousPrice) * 100;
+  var percentCell = stocks.getRange(stockRow, 3); 
+
+  var arrow = percentChange > 0 ? "↑" : percentChange < 0 ? "↓" : ""; 
+  var color = percentChange > 0 ? "green" : percentChange < 0 ? "red" : null; 
+  
+  percentCell.setValue(arrow + " " + Math.abs(percentChange.toFixed(2)) + "%"); 
+  percentCell.setBackground(color); 
+}
+
+function logStockData(stockData, company, previousPrice, currentPrice) {
+  var highPrice = Math.max(previousPrice, currentPrice);
+  var lowPrice = Math.min(previousPrice, currentPrice);
+  
+  var nextRow = stockData.getLastRow() + 1;
+  stockData.getRange(nextRow, 1, 1, 4).setValues([[String(previousPrice), String(highPrice), String(lowPrice), String(currentPrice)]]);
+}
+
+function updateStockPriceColor(stocks, stockRow, previousPrice, currentPrice) {
+  var priceCell = stocks.getRange(stockRow, 2);
+  
+  if (currentPrice > previousPrice) {
+    priceCell.setBackground("green");
+    var percentChange = ((currentPrice - previousPrice) / previousPrice) * 100;
+    priceCell.setComment("Price increased by " + percentChange.toFixed(2) + "%");
+  } else if (currentPrice < previousPrice) {
+    priceCell.setBackground("red");
+    var percentChange = ((previousPrice - currentPrice) / previousPrice) * 100;
+    priceCell.setComment("Price decreased by " + percentChange.toFixed(2) + "%");
+  } else {
+    priceCell.setBackground(null); 
+    priceCell.setComment(""); 
+  }
+}
+
+function findStockRow(stocks, company) {
+  var stockData = stocks.getDataRange().getValues();
+  for (var i = 1; i < stockData.length; i++) {
+    if (stockData[i][0] === company) {
+      return i + 1; 
+    }
+  }
+  return -1; 
+}
+
+function findPlayerRow(balances, player) {
+  var balanceData = balances.getDataRange().getValues();
+  for (var i = 1; i < balanceData.length; i++) {
+    if (balanceData[i][0] === player) {
+      return i + 1; 
+    }
+  }
+  return -1; 
+}
+
+function updatePlayerShares(balances, balanceRow, company, shares) {
+  var sharesColumn = findSharesColumn(balances, company);
+  if (sharesColumn === -1) {
+    sharesColumn = balances.getLastColumn() + 1; 
+    balances.getRange(1, sharesColumn).setValue(company); 
+  }
+
+  var currentShares = balances.getRange(balanceRow, sharesColumn).getValue();
+  balances.getRange(balanceRow, sharesColumn).setValue(currentShares + shares);
+}
+
+function findSharesColumn(balances, company) {
+  var balanceData = balances.getRange(1, 1, 1, balances.getLastColumn()).getValues()[0];
+  for (var i = 3; i < balanceData.length; i++) { 
+    if (balanceData[i] === company) {
+      return i + 1; 
+    }
+  }
+  return -1; 
+}
+
+function getPlayerShares(balances, balanceRow, company) {
+  var sharesColumn = findSharesColumn(balances, company);
+  if (sharesColumn === -1) return 0; 
+  return balances.getRange(balanceRow, sharesColumn).getValue();
+}
+
+function sendStockUpdateToDiscord(stocks, stockRow) {
+  var url = "https://discord.com/api/webhooks/1288945426007068724/Uz3562oLIPrsa6xAba_hqy_w4eLg8teulY-GiSeq0grUzvzLvOFSq1ENMT6Z6OneUYv8"; 
+  var company = stocks.getRange(stockRow, 1).getValue();
+  var currentPrice = parseFloat(String(stocks.getRange(stockRow, 2).getValue()).replace(/[$,]/g, ''));
+  var openPrice = parseFloat(String(stocks.getRange(stockRow, 4).getValue()).replace(/[$,]/g, ''));
+  var closePrice = parseFloat(String(stocks.getRange(stockRow, 5).getValue()).replace(/[$,]/g, ''));
+  var highPrice = parseFloat(String(stocks.getRange(stockRow, 6).getValue()).replace(/[$,]/g, ''));
+  var lowPrice = parseFloat(String(stocks.getRange(stockRow, 7).getValue()).replace(/[$,]/g, ''));
+
+  // Prepare embed
+  var embed = {
+    "embeds": [{
+      "title": "Stock Update for " + company,
+      "color": currentPrice > openPrice ? 0x00FF00 : 0xFF0000,
+      "fields": [
+        { "name": "Current Price", "value": `$${currentPrice.toFixed(2)}`, "inline": true },
+        { "name": "Open Price", "value": `$${openPrice.toFixed(2)}`, "inline": true },
+        { "name": "Close Price", "value": `$${closePrice.toFixed(2)}`, "inline": true },
+        { "name": "High Price", "value": `$${highPrice.toFixed(2)}`, "inline": true },
+        { "name": "Low Price", "value": `$${lowPrice.toFixed(2)}`, "inline": true },
+        { "name": "Change", "value": `${((currentPrice - openPrice) / openPrice * 100).toFixed(2)}%`, "inline": true }
+      ],
+      "thumbnail": {
+        "url": "https://i.imgur.com/0M2NRKM.png"
+      }
+    }]
+  };
+
+  // Add other stocks to the embed
+  var allStocks = stocks.getDataRange().getValues();
+  embed.embeds[0].fields.push({ name: "Other Stocks", value: "```", inline: false });
+  
+  for (var i = 1; i < allStocks.length; i++) {
+    var otherCompany = allStocks[i][0];
+    var otherPrice = parseFloat(String(allStocks[i][1]).replace(/[$,]/g, ''));
+    var otherOpen = parseFloat(String(allStocks[i][4]).replace(/[$,]/g, ''));
+    var otherClose = parseFloat(String(allStocks[i][5]).replace(/[$,]/g, ''));
+    var otherHigh = parseFloat(String(allStocks[i][6]).replace(/[$,]/g, ''));
+    var otherLow = parseFloat(String(allStocks[i][7]).replace(/[$,]/g, ''));
+
+    embed.embeds[0].fields.push({
+      name: otherCompany,
+      value: `Current: $${otherPrice.toFixed(2)}\nOpen: $${otherOpen.toFixed(2)}\nClose: $${otherClose.toFixed(2)}\nHigh: $${otherHigh.toFixed(2)}\nLow: $${otherLow.toFixed(2)}`,
+      inline: true
+    });
+  }
+
+  embed.embeds[0].fields.push({ name: "\u200B", value: "```", inline: false });
+
+  // Send the embed to Discord
+  var options = {
+    "method": "post",
+    "contentType": "application/json",
+    "payload": JSON.stringify(embed)
+  };
+
+  try {
+    UrlFetchApp.fetch(url, options);
+  } catch (error) {
+    Logger.log("Error sending to Discord: " + error);
+  }
+}
